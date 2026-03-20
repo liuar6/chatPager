@@ -5,7 +5,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["chatpager.js"]
+      "js": ["chatPager.js"]
     }
   ]
 }
