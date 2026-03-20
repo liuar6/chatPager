@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "chatPager",
+  "version": "0.1.0",
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["chatpager.js"]
+    }
+  ]
+}
