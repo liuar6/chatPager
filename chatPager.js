@@ -15,6 +15,7 @@
     autoToLastPage: true,
     scrollToTopOnPageChange: true,
     mode: MODE.COMPRESS,
+    min_compress_length: 50,
     debug: true,
   };
 
@@ -165,13 +166,23 @@
     range.setEndAfter(endNode);
 
     const fragment = range.extractContents();
-
     const temp = document.createElement('div');
     temp.appendChild(fragment);
+    const html = temp.innerHTML;
+
+    if (html.length < CONFIG.min_compress_length) {
+      parent.insertBefore(fragment, nextSibling);
+
+      while (temp.firstChild) {
+        parent.insertBefore(temp.firstChild, nextSibling);
+      }
+
+      return null;
+    }
 
     const placeholder = document.createElement('span');
     placeholder.hidden = true;
-    placeholder.__chatpagerCompressed = temp.innerHTML;
+    placeholder.__chatpagerCompressed = html;
     placeholder.setAttribute('data-chatpager-compressed', '1');
 
     parent.insertBefore(placeholder, nextSibling);
@@ -226,7 +237,7 @@
     return (
       node.tagName === 'BUTTON' ||
       node.hasAttribute('data-state') ||
-      node.getAttribute('data-turn') === "user" ||
+      //node.getAttribute('data-turn') === "user" ||
       //node.getAttribute('aria-label') === 'Response actions' || //回复操作
       //node.getAttribute('aria-label') === 'Your message actions' || //你的消息操作
       node.firstElementChild?.tagName === 'BUTTON' ||
@@ -245,7 +256,8 @@
   }
 
   function isReferable(node) {
-    return CONFIG.mode === MODE.REFERRED_COMPRESS;
+    if (CONFIG.mode !== MODE.REFERRED_COMPRESS) return false;
+    return !node.__chatpagerRefs;
   }
 
   function tryCompress(node, refStore) {
@@ -267,8 +279,8 @@
     let end = null;
     let allTrue = true;
 
-    for (let cur = node.firstElementChild; cur; ) {
-      const next = cur.nextElementSibling;
+    for (let cur = node.firstChild; cur; ) {
+      const next = cur.nextSibling;
       const ok = tryCompress(cur, refStore);
 
       if (ok) {
@@ -293,6 +305,11 @@
       compressNodesIntoPlaceholder(start, end);
     }
 
+    if (refStore && isReferable(node)) {
+      referNodeIntoPlaceholder(node, refStore);
+      return true;
+    }
+
     return false;
   }
 
@@ -300,10 +317,10 @@
     const refStore = allowRef ? ensureMessageRefStore(node): null;
     const ret = tryCompress(node, refStore);
 
-    if (ret && node.firstElementChild) {
+    if (ret && node.firstChild) {
       compressNodesIntoPlaceholder(
-        node.firstElementChild,
-        node.lastElementChild
+        node.firstChild,
+        node.lastChild
       );
     }
 
@@ -311,6 +328,31 @@
   }
 
   function decompressMessageContent(node) {
+    if (node.__chatpagerRefs) {
+      const refStore = node.__chatpagerRefs;
+      let refUnsolved = node.__chatpagerRefs.length;
+
+      while (refUnsolved > 0){
+        const refList = node.querySelectorAll('[data-chatpager-ref]');
+        refUnsolved -= refList.length;
+
+        for (const placeholder of refList) {
+          restoreReferencePlaceholder(placeholder, refStore);
+        }
+
+        const compressedList = node.querySelectorAll('[data-chatpager-compressed]');
+
+        for (const placeholder of compressedList) {
+          restoreCompressedPlaceholder(placeholder);
+        }
+
+      }
+
+      delete node.__chatpagerHasCompressed;
+      delete node.__chatpagerRefs;
+      return;
+    }
+
     if (node.__chatpagerHasCompressed) {
       const compressedList = node.querySelectorAll('[data-chatpager-compressed]');
 
@@ -319,18 +361,10 @@
       }
 
       delete node.__chatpagerHasCompressed;
+      return;
     }
 
-    if (node.__chatpagerRefs) {
-      const refStore = node.__chatpagerRefs;
-      const refList = node.querySelectorAll('[data-chatpager-ref]');
-
-      for (const placeholder of refList) {
-        restoreReferencePlaceholder(placeholder, refStore);
-      }
-
-      delete node.__chatpagerRefs;
-    }
+    return;
   }
 
   function detachMessageContent(message) {
@@ -356,7 +390,24 @@
 
 //#region
 
+  function isMessageFinished(message){
+    if (message.__chatpagerMessageFinished) {
+      return true;
+    }
+
+    if (message.querySelector('[data-testid="copy-turn-action-button"]')){
+      message.__chatpagerMessageFinished = true;
+      return true;
+    }
+
+    return false;
+  }
+
   function packMessageContent(message){
+    if (message.getAttribute('data-turn') === 'assistant' && !isMessageFinished(message)) {
+      return;
+    }
+
     if (CONFIG.mode === MODE.DETACH){
       detachMessageContent(message);  
     }
@@ -503,10 +554,41 @@ function ensureToolbar() {
 
       .chatpager-panel {
         width: 292px;
-        padding: 12px;
+        padding: 18px 12px;
         display: none;
         flex-direction: column;
         gap: 10px;
+      }
+
+      .chatpager-drag-handle {
+        height: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: grab;
+        user-select: none;
+      }
+
+      .chatpager-drag-handle:active {
+        cursor: grabbing;
+      }
+
+      .chatpager-drag-bar {
+        width: 80px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(13, 13, 13, 0.18);
+        transition: all 120ms ease;
+      }
+
+      .chatpager-drag-handle:hover .chatpager-drag-bar {
+        background: rgba(13, 13, 13, 0.28);
+        width: 84px;
+      }
+
+      .chatpager-drag-handle:active .chatpager-drag-bar {
+        background: rgba(13, 13, 13, 0.35);
+        width: 86px;
       }
 
       .chatpager-btn,
@@ -624,11 +706,15 @@ function ensureToolbar() {
   const panel = document.createElement('div');
   panel.id = 'chatpager-settings-panel';
   panel.className = 'chatpager-panel';
-  panel.style.display = 'none'; /* 不然要点击两次才能打开面板*/
+  panel.style.display = 'none';
 
   const bar = document.createElement('div');
   bar.id = 'chatpager-toolbar';
   bar.className = 'chatpager-toolbar';
+
+  const dragHandle = document.createElement('div');
+  dragHandle.className = 'chatpager-drag-handle';
+  dragHandle.innerHTML = '<div class="chatpager-drag-bar"></div>';
 
   const info = document.createElement('div');
   info.id = 'chatpager-info';
@@ -636,6 +722,7 @@ function ensureToolbar() {
   const pageInput = document.createElement('input');
   pageInput.id = 'chatpager-input';
   pageInput.className = 'chatpager-input';
+  pageInput.style.textAlign = 'center';
   pageInput.type = 'number';
   pageInput.min = '1';
   pageInput.placeholder = 'Page';
@@ -744,6 +831,7 @@ function ensureToolbar() {
   const settingsBtn = button('Settings', togglePanel);
 
   bar.append(
+    dragHandle,
     button('First', () => window.chatPager.first()),
     button('Prev', () => window.chatPager.prev()),
     info,
@@ -826,6 +914,52 @@ function ensureToolbar() {
 
   root.append(panel, bar);
   document.body.appendChild(root);
+
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startRight = 40;
+  let startTopPx = 0;
+
+  function onMouseMove(e) {
+    if (!dragging) return;
+
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+
+    const newRight = startRight - dx;
+    const newTop = startTopPx + dy;
+
+    root.style.right = `${newRight}px`;
+    root.style.top = `${newTop}px`;
+    root.style.transform = 'none';
+  }
+
+  function onMouseUp() {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  }
+
+  dragHandle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+
+    const rect = root.getBoundingClientRect();
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startRight = window.innerWidth - rect.right;
+    startTopPx = rect.top;
+
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+
+    e.preventDefault();
+    e.stopPropagation();
+  });
 
   STATE.rootUI = root;
   updateToolbar();
