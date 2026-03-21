@@ -554,7 +554,7 @@ function ensureToolbar() {
 
       .chatpager-panel {
         width: 292px;
-        padding: 18px 12px;
+        padding: 16px 12px 12px 12px;
         display: none;
         flex-direction: column;
         gap: 10px;
@@ -659,7 +659,7 @@ function ensureToolbar() {
       .chatpager-divider {
         height: 1px;
         background: rgba(13, 13, 13, 0.08);
-        margin: 2px 0;
+        margin: 4px 0;
       }
 
       .chatpager-row-2 {
